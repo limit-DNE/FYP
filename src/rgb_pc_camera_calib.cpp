@@ -7,6 +7,8 @@
 #include <opencv2/core/eigen.hpp>
 #include <pcl/io/pcd_io.h>
 #include <pcl/point_types.h>
+#include <pcl/common/transforms.h>
+#include <Eigen/Geometry>
 
 using namespace std;
 
@@ -199,33 +201,53 @@ void generateRGBPointCloud(const string& pcd_file, pcl::PointCloud<pcl::PointXYZ
         PCL_ERROR("Couldn't read pcl file \n");
         return;
     }
-    
-     // Camera intrinsic parameters
+
+    // Camera intrinsic parameters
     float fx = inner(0, 0), fy = inner(1, 1), cx = inner(0, 2), cy = inner(1, 2);
 
     // Extrinsic parameters: conversion from quaternion to rotation matrix
-    Eigen::Quaterniond q(quaternion(3), quaternion(0), quaternion(1), quaternion(2)); // Eigen expects (w, x, y, z)
+    Eigen::Quaterniond q(quaternion(3), quaternion(0), quaternion(1), quaternion(2));  // Eigen expects (w, x, y, z)
     Eigen::Matrix3d R = q.toRotationMatrix();
+
+    // Combine rotation and translation into a 4x4 transformation matrix
+    Eigen::Matrix4f transformation_matrix = Eigen::Matrix4f::Identity();
+    transformation_matrix.block<3, 3>(0, 0) = R.cast<float>();  // Convert double to float
+    transformation_matrix.block<3, 1>(0, 3) = transation.cast<float>();  // Convert double to float
 
     // Transform the point cloud to the camera coordinate system
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::transformPointCloud(*cloud, *transformed_cloud, transformation_matrix);
 
-    // // Filter points within the camera's FOV and project them onto 2D
-    // for (const auto& point : transformed_cloud->points)
-    // {
-    //     // Project the point onto the camera's image plane
-    //     float u = fx * point.x / point.z + cx;
-    //     float v = fy * point.y / point.z + cy;
+    // Assume image_width and image_height are defined somewhere in your code
+    int image_width = 640;  // Example value, replace with your actual image width
+    int image_height = 480; // Example value, replace with your actual image height
 
-    //     // Check if the point is within the image boundaries
-    //     if (u >= 0 && u < image_width && v >= 0 && v < image_height)
-    //     {
-    //         // The point is within the camera's FOV
-    //         // You can now associate this point with its corresponding pixel in the RGB image
-    //         // and assign the color to the point in the rgb_cloud
-    //     }
-    // }
+    for (const auto& point : transformed_cloud->points) {
+        // Project the point onto the camera's image plane
+        float u = fx * point.x / point.z + cx;
+        float v = fy * point.y / point.z + cy;
+
+        // Check if the point is within the image boundaries
+        if (u >= 0 && u < image_width && v >= 0 && v < image_height) {
+            // The point is within the camera's FOV
+            // Associate this point with its corresponding pixel in the RGB image
+            // For demonstration, we assign a placeholder color (white) to the point
+            pcl::PointXYZRGB color_point;
+            color_point.x = point.x;
+            color_point.y = point.y;
+            color_point.z = point.z;
+            color_point.r = 255;  // Red component
+            color_point.g = 255;  // Green component
+            color_point.b = 255;  // Blue component
+
+            rgb_cloud->points.push_back(color_point);
+        }
+    }
+
+    // Set the width, height, and is_dense properties of the rgb_cloud
+    rgb_cloud->width = rgb_cloud->points.size();
+    rgb_cloud->height = 1;
+    rgb_cloud->is_dense = false;
 }
 
 int main(int argc, char **argv) {
