@@ -116,9 +116,9 @@ void generateRGBPointCloud(const string& pcd_file, const std::string& image_file
     pcl::PointCloud<pcl::PointXYZ>::Ptr transformed_cloud(new pcl::PointCloud<pcl::PointXYZ>);
     pcl::transformPointCloud(*cloud, *transformed_cloud, transformation_matrix);
 
-    // Assume image_width and image_height are defined somewhere in your code
-    int image_width = 640;  // Example value, replace with your actual image width
-    int image_height = 480; // Example value, replace with your actual image height
+    // Obtain image width and height from the cv::Mat object
+    int image_width = image.cols;
+    int image_height = image.rows;
 
     for (const auto& point : transformed_cloud->points) {
         // Project the point onto the camera's image plane
@@ -149,6 +149,28 @@ void generateRGBPointCloud(const string& pcd_file, const std::string& image_file
     rgb_cloud->is_dense = false;
 }
 
+void overlayPointCloudOnImage(pcl::PointCloud<pcl::PointXYZRGB>::Ptr& cloud, cv::Mat& image, float fx, float fy, float cx, float cy) {
+    // Sort the points by Z (depth) in descending order to handle occlusions
+    std::sort(cloud->points.begin(), cloud->points.end(), [](const pcl::PointXYZRGB& a, const pcl::PointXYZRGB& b) {
+        return a.z > b.z;
+    });
+
+    for (const auto& point : cloud->points) {
+        int u = static_cast<int>((fx * point.x / point.z) + cx);
+        int v = static_cast<int>((fy * point.y / point.z) + cy);
+
+        // Check if the projected point is within the image bounds
+        if (u >= 0 && u < image.cols && v >= 0 && v < image.rows) {
+            // Color the pixel at (u, v) with the point's color
+            std::cout << "Within image bounds.." << std::endl;
+            cv::Vec3b& pixel = image.at<cv::Vec3b>(v, u);
+            pixel[0] = point.b;
+            pixel[1] = point.g;
+            pixel[2] = point.r;
+        }
+    }
+}
+
 void processPointCloudFile(const std::string& pcd_file, const std::string& image_file) {
     // Load the original point cloud
     pcl::PointCloud<pcl::PointXYZ>::Ptr original_cloud(new pcl::PointCloud<pcl::PointXYZ>);
@@ -160,50 +182,85 @@ void processPointCloudFile(const std::string& pcd_file, const std::string& image
     // Optionally visualize the original point cloud
     // visualizePointCloud(original_cloud, "Original Point Cloud");
 
+    std::cout << "Generating RGB point cloud..." << std::endl;
     pcl::PointCloud<pcl::PointXYZRGB>::Ptr rgb_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
     generateRGBPointCloud(pcd_file, image_file, rgb_cloud);
+    std::cout << "RGB point cloud generated." << std::endl;
 
     // Save the processed point cloud to a file
-    std::string output_filename = "processed_" + fs::path(pcd_file).filename().string();
-    pcl::io::savePCDFileASCII(output_filename, *rgb_cloud);
-    std::cout << "Saved processed point cloud to " << output_filename << std::endl;
+    std::string output_pcd_file = "processed_" + fs::path(pcd_file).filename().string();
+    pcl::io::savePCDFileASCII(output_pcd_file, *rgb_cloud);
+    std::cout << "Saved processed point cloud to: " << fs::absolute(output_pcd_file) << std::endl;
 
     // Visualize the resulting RGB point cloud
    // visualizePointCloud(rgb_cloud, "RGB Point Cloud Visualization: " + fs::path(pcd_file).filename().string());
 
     // Optionally save the processed point cloud to a file
     // pcl::io::savePCDFileASCII("processed_" + fs::path(pcd_file).filename().string(), *rgb_cloud);
+
+    std::cout << "Overlaying point cloud on image..." << std::endl;
+    cv::Mat image = cv::imread(image_file, cv::IMREAD_COLOR);
+    if (image.empty()) {
+        std::cerr << "Failed to load image: " << image_file << std::endl;
+        return;
+    }
+
+    // Call overlayPointCloudOnImage here
+    // You need to provide the camera's intrinsic parameters: fx, fy, cx, cy
+    // These should be known or calibrated values specific to your camera setup
+    float fx = 1364.45f;  // Example value, replace with your actual camera's focal length in x direction
+    float fy = 1366.46f;  // Example value, replace with your actual camera's focal length in y direction
+    float cx = 958.327f;  // Example value, replace with your actual camera's principal point x-coordinate
+    float cy = 535.074f;  // Example value, replace with your actual camera's principal point y-coordinate
+
+    overlayPointCloudOnImage(rgb_cloud, image, fx, fy, cx, cy);
+    std::cout << "Overlay completed." << std::endl;
+
+    // Save the overlayed image
+    std::string output_image_file = "overlayed_" + fs::path(image_file).filename().string();
+    cv::imwrite(output_image_file, image);
+    std::cout << "Saved overlayed image to: " << fs::absolute(output_image_file) << std::endl;
 }
 
 int main(int argc, char** argv) {
-    // Check for three arguments: the executable, the PCD file path, and the PNG file path
+    std::cout << "Program started" << std::endl;
+
+    // Check for three arguments: the executable, the PCD directory, and the PNG directory
     if (argc != 3) {
-        std::cerr << "Usage: " << argv[0] << " <input_pcd_file> <input_png_file>" << std::endl;
+        std::cerr << "Usage: " << argv[0] << " <pcd_directory> <png_directory>" << std::endl;
         return -1;
     }
 
-    fs::path directory_path(argv[1]);
-    if (!fs::exists(directory_path) || !fs::is_directory(directory_path)) {
-        std::cerr << "Provided path is not a directory." << std::endl;
+    fs::path pcd_directory(argv[1]);
+    fs::path png_directory(argv[2]);
+
+    // Ensure both provided paths are directories
+    if (!fs::is_directory(pcd_directory) || !fs::is_directory(png_directory)) {
+        std::cerr << "Both arguments must be valid directories." << std::endl;
         return -1;
     }
 
+    // Iterate over the PCD directory
     fs::directory_iterator end_itr; // Default construction yields past-the-end
-    for (fs::directory_iterator itr(directory_path); itr != end_itr; ++itr) {
-        if (fs::is_regular_file(itr->status())) {
-            fs::path current_path = itr->path();
-            if (current_path.extension() == ".pcd") {
-                // Construct the PNG filename by changing the extension
-                fs::path png_path = current_path;
-                png_path.replace_extension(".png");
+    for (fs::directory_iterator pcd_itr(pcd_directory); pcd_itr != end_itr; ++pcd_itr) {
+        if (fs::is_regular_file(pcd_itr->status()) && pcd_itr->path().extension() == ".pcd") {
+            // Construct the expected PNG filename by changing the extension and directory
+            fs::path expected_png_path = png_directory / pcd_itr->path().filename().replace_extension(".png");
 
-                // Check if the PNG file exists
-                if (fs::exists(png_path)) {
-                    // Process the PCD and PNG pair
-                    processPointCloudFile(current_path.string(), png_path.string());
-                }
+            // Check if the expected PNG file exists
+            if (fs::exists(expected_png_path)) {
+                // Process the PCD and PNG pair
+                std::cout << "Processing: " << pcd_itr->path() << " and " << expected_png_path << std::endl;
+                processPointCloudFile(pcd_itr->path().string(), expected_png_path.string());
+
+                // After processing, overlay the point cloud on the image if required
+                // Overlay function should be defined elsewhere in your code
+                // overlayPointCloudOnImage(pcd_itr->path().string(), expected_png_path.string());
+            } else {
+                std::cerr << "Matching PNG file not found for: " << pcd_itr->path() << std::endl;
             }
         }
     }
+
     return 0;
 }
