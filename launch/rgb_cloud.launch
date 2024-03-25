@@ -1,0 +1,16 @@
+<launch>
+    <!-- Node for processing and publishing colorized point clouds from bag files -->
+    <node name="bag_to_rgb" pkg="livox_camera_calib" type="bag_to_rgb" output="screen">
+        <!-- Node parameters can be set here if needed -->
+    </node>
+
+    <!-- Static Transform Publisher to define the fixed spatial relationship between the LiDAR and camera frames -->
+    <!-- Replace X, Y, Z with the translation from the LiDAR frame to the camera frame -->
+    <!-- Replace YAW, PITCH, ROLL with the rotation from the LiDAR frame to the camera frame -->
+    <node pkg="tf2_ros" type="static_transform_publisher" name="livox_to_cam_tf_broadcaster"
+          args="X Y Z YAW PITCH ROLL livox_frame cam_1_color_optical_frame" />
+
+    <!-- Launch RViz with a predefined configuration to visualize the point clouds and other relevant data -->
+    <node name="rviz" pkg="rviz" type="rviz" args="-d $(find livox_camera_calib)/path/to/your/rviz_config_file.rviz" />
+</launch>
+
