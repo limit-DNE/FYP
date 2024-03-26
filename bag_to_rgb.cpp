@@ -6,6 +6,7 @@
 #include <pcl/point_cloud.h>
 #include <pcl/point_types.h>
 #include <Eigen/Dense>
+#include <Eigen/Geometry> // For Quaternion
 #include <livox_ros_driver2/CustomMsg.h>
 #include <sensor_msgs/Image.h>
 #include <cv_bridge/cv_bridge.h>
@@ -14,6 +15,9 @@
 #include <opencv2/imgproc/imgproc.hpp>
 #include <opencv2/opencv.hpp>
 #include <opencv2/core/eigen.hpp>
+#include <cmath> // For std::atan2 and std::hypot
+#include <geometry_msgs/PoseStamped.h>
+#include <opencv2/core/affine.hpp> // For cv::Affine3d
 
 
 
@@ -32,10 +36,26 @@ cv_bridge::CvImagePtr cv_ptr;
 ros::Publisher pub;  // Define the publisher globally
 
 
-Eigen::Matrix4f extrinsic_matrix; 
-
 // Transformation from LiDAR frame to camera frame (4x4 matrix)
 Eigen::Matrix4f lidar_to_camera;
+
+Eigen::Matrix4f extrinsic_matrix; 
+
+// Global variable to hold the latest camera pose
+geometry_msgs::PoseStamped latest_camera_pose;
+
+void initializeExtrinsicMatrix() {
+    extrinsic_matrix << -0.0120393, -0.999923,  0.00311385, -0.173498,
+                         0.418446,   -0.00786641, -0.908208, -0.173128,
+                         0.908162,   -0.00963118, 0.418509,  0.00790568,
+                         0,          0,          0,         1;
+}
+
+
+// Callback function to update the camera pose
+void cameraPoseCallback(const geometry_msgs::PoseStamped::ConstPtr& msg) {
+    latest_camera_pose = *msg;
+}
 
 // Conversion function from Livox custom message to PCL PointXYZ
 void convertCustomMsgToPCLPointCloud(const livox_ros_driver2::CustomMsg& custom_msg, pcl::PointCloud<pcl::PointXYZ>::Ptr& pcl_cloud) {
@@ -55,40 +75,84 @@ void convertCustomMsgToPCLPointCloud(const livox_ros_driver2::CustomMsg& custom_
 }
 
 
-void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud,
-                        const cv::Mat& image,
-                        pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
+/*void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const cv::Mat& image, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
     colorized_cloud->clear();
 
-    int colorized_points = 0;
+    // Convert ROS pose to OpenCV Affine transformation
+    cv::Affine3d camera_pose(
+        cv::Affine3d::Mat3(
+            latest_camera_pose.pose.orientation.w,
+            -latest_camera_pose.pose.orientation.z,
+            latest_camera_pose.pose.orientation.y,
+            latest_camera_pose.pose.orientation.z,
+            latest_camera_pose.pose.orientation.w,
+            -latest_camera_pose.pose.orientation.x,
+            -latest_camera_pose.pose.orientation.y,
+            latest_camera_pose.pose.orientation.x,
+            latest_camera_pose.pose.orientation.w
+        ),
+        cv::Affine3d::Vec3(
+            latest_camera_pose.pose.position.x,
+            latest_camera_pose.pose.position.y,
+            latest_camera_pose.pose.position.z
+        )
+    );
+
     for (const auto& point : cloud->points) {
-        if (point.z <= 0) continue;  // Skip points with non-positive z value to avoid division by zero
+        if (point.z <= 0) continue;  // Skip points behind the camera
 
+        // Transform the point from point cloud frame to camera frame
+        cv::Vec3d transformed_point = camera_pose * cv::Vec3d(point.x, point.y, point.z);
 
-        float u = (camera_matrix.at<double>(0, 0) * point.x / point.z) + camera_matrix.at<double>(0, 2);
-        float v = (camera_matrix.at<double>(1, 1) * point.y / point.z) + camera_matrix.at<double>(1, 2);
+        std::vector<cv::Point3f> object_points{ {static_cast<float>(transformed_point[0]), static_cast<float>(transformed_point[1]), static_cast<float>(transformed_point[2])} };
+        std::vector<cv::Point2f> image_points;
+        cv::projectPoints(object_points, cv::Vec3f(0, 0, 0), cv::Vec3f(0, 0, 0), camera_matrix, dist_coeffs, image_points);
 
-        // Check if the projected point is within the image bounds
-        if (u >= 0 && u < image.cols && v >= 0 && v < image.rows) {
-            // Extract color from the image at the pixel location
-            cv::Vec3b color = image.at<cv::Vec3b>(cv::Point(u, v));
-
-            // Assign color to the point in the colorized point cloud
+        auto& ip = image_points[0];
+        if (ip.x >= 0 && ip.x < image.cols && ip.y >= 0 && ip.y < image.rows) {
+            cv::Vec3b color = image.at<cv::Vec3b>(cv::Point(ip.x, ip.y));
             pcl::PointXYZRGB colorized_point;
             colorized_point.x = point.x;
             colorized_point.y = point.y;
             colorized_point.z = point.z;
-            colorized_point.r = color[2];  
-            colorized_point.g = color[1];  
-            colorized_point.b = color[0];  
+            colorized_point.r = color[2];
+            colorized_point.g = color[1];
+            colorized_point.b = color[0];
             colorized_cloud->points.push_back(colorized_point);
-            colorized_points++;
         }
     }
+    ROS_INFO("Processed %lu points. Colorized %d points.", cloud->points.size(), colorized_cloud->points.size());
+} */
 
-    ROS_INFO("Processed %lu points. Colorized %d points.", cloud->points.size(), colorized_points);
+void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const cv::Mat& image, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
+    colorized_cloud->clear();
+
+    Eigen::Matrix4f transformation_matrix = extrinsic_matrix; // Assuming extrinsic_matrix represents the transformation from point cloud frame to camera frame
+
+    for (const auto& point : cloud->points) {
+        // Apply the extrinsic transformation
+        Eigen::Vector4f transformed_point = transformation_matrix * Eigen::Vector4f(point.x, point.y, point.z, 1.0f);
+
+        // Project the transformed point to the image plane
+        std::vector<cv::Point3f> object_points{ {transformed_point(0), transformed_point(1), transformed_point(2)} };
+        std::vector<cv::Point2f> image_points;
+        cv::projectPoints(object_points, cv::Vec3f(0, 0, 0), cv::Vec3f(0, 0, 0), camera_matrix, dist_coeffs, image_points);
+
+        auto& ip = image_points[0];
+        if (ip.x >= 0 && ip.x < image.cols && ip.y >= 0 && ip.y < image.rows) {
+            cv::Vec3b color = image.at<cv::Vec3b>(cv::Point(ip.x, ip.y));
+            pcl::PointXYZRGB colorized_point;
+            colorized_point.x = transformed_point(0);
+            colorized_point.y = transformed_point(1);
+            colorized_point.z = transformed_point(2);
+            colorized_point.r = color[2];
+            colorized_point.g = color[1];
+            colorized_point.b = color[0];
+            colorized_cloud->points.push_back(colorized_point);
+        }
+    }
+    ROS_INFO("Processed %lu points. Colorized %d points.", cloud->points.size(), colorized_cloud->points.size());
 }
-
 
 
 void colorizePointCloudFromBag(const std::string& bag_file_path, ros::NodeHandle& nh) {
@@ -165,8 +229,14 @@ void colorizePointCloudFromBag(const std::string& bag_file_path, ros::NodeHandle
 int main(int argc, char** argv) {
     ros::init(argc, argv, "bag_to_rgb");
     ros::NodeHandle nh;
+     // Initialize extrinsic matrix
+    initializeExtrinsicMatrix();
+
 
     pub = nh.advertise<sensor_msgs::PointCloud2>("rgb_cloud", 1);
+    
+    // Subscribe to the camera pose topic
+    ros::Subscriber pose_sub = nh.subscribe("/camera_pose", 1, cameraPoseCallback);
 
     if (argc < 2) {
         ROS_ERROR("You must specify the bag file path as a command-line argument.");
