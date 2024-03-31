@@ -75,54 +75,6 @@ void convertCustomMsgToPCLPointCloud(const livox_ros_driver2::CustomMsg& custom_
 }
 
 
-/*void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const cv::Mat& image, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
-    colorized_cloud->clear();
-
-    // Convert ROS pose to OpenCV Affine transformation
-    cv::Affine3d camera_pose(
-        cv::Affine3d::Mat3(
-            latest_camera_pose.pose.orientation.w,
-            -latest_camera_pose.pose.orientation.z,
-            latest_camera_pose.pose.orientation.y,
-            latest_camera_pose.pose.orientation.z,
-            latest_camera_pose.pose.orientation.w,
-            -latest_camera_pose.pose.orientation.x,
-            -latest_camera_pose.pose.orientation.y,
-            latest_camera_pose.pose.orientation.x,
-            latest_camera_pose.pose.orientation.w
-        ),
-        cv::Affine3d::Vec3(
-            latest_camera_pose.pose.position.x,
-            latest_camera_pose.pose.position.y,
-            latest_camera_pose.pose.position.z
-        )
-    );
-
-    for (const auto& point : cloud->points) {
-        if (point.z <= 0) continue;  // Skip points behind the camera
-
-        // Transform the point from point cloud frame to camera frame
-        cv::Vec3d transformed_point = camera_pose * cv::Vec3d(point.x, point.y, point.z);
-
-        std::vector<cv::Point3f> object_points{ {static_cast<float>(transformed_point[0]), static_cast<float>(transformed_point[1]), static_cast<float>(transformed_point[2])} };
-        std::vector<cv::Point2f> image_points;
-        cv::projectPoints(object_points, cv::Vec3f(0, 0, 0), cv::Vec3f(0, 0, 0), camera_matrix, dist_coeffs, image_points);
-
-        auto& ip = image_points[0];
-        if (ip.x >= 0 && ip.x < image.cols && ip.y >= 0 && ip.y < image.rows) {
-            cv::Vec3b color = image.at<cv::Vec3b>(cv::Point(ip.x, ip.y));
-            pcl::PointXYZRGB colorized_point;
-            colorized_point.x = point.x;
-            colorized_point.y = point.y;
-            colorized_point.z = point.z;
-            colorized_point.r = color[2];
-            colorized_point.g = color[1];
-            colorized_point.b = color[0];
-            colorized_cloud->points.push_back(colorized_point);
-        }
-    }
-    ROS_INFO("Processed %lu points. Colorized %d points.", cloud->points.size(), colorized_cloud->points.size());
-} */
 
 void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const cv::Mat& image, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
     colorized_cloud->clear();
@@ -226,13 +178,73 @@ void colorizePointCloudFromBag(const std::string& bag_file_path, ros::NodeHandle
     }
 }
 
+void colorizeAndPublishPointCloudFrame(const rosbag::MessageInstance& m, const cv::Mat& image, const ros::Publisher& pub) {
+    livox_ros_driver2::CustomMsg::ConstPtr custom_msg = m.instantiate<livox_ros_driver2::CustomMsg>();
+    if (custom_msg != nullptr) {
+        pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>());
+        convertCustomMsgToPCLPointCloud(*custom_msg, cloud);
+
+        pcl::PointCloud<pcl::PointXYZRGB>::Ptr colorized_cloud(new pcl::PointCloud<pcl::PointXYZRGB>);
+        if (!image.empty()) {
+            colorizePointCloud(cloud, image, colorized_cloud);
+        } else {
+            ROS_WARN("No image available for colorizing the point cloud.");
+        }
+
+        sensor_msgs::PointCloud2 output;
+        pcl::toROSMsg(*colorized_cloud, output);
+        output.header.frame_id = "livox";
+        output.header.stamp = ros::Time::now();
+        pub.publish(output);
+        ROS_INFO("Published colorized point cloud frame.");
+    }
+}
+
+void colorizePointCloudFromBagFrameByFrame(const std::string& bag_file_path, ros::NodeHandle& nh) {
+    rosbag::Bag bag;
+    bag.open(bag_file_path, rosbag::bagmode::Read);
+
+    std::vector<std::string> topics = {"/livox/lidar", "/cam_1/color/image_raw"};
+    rosbag::View view(bag, rosbag::TopicQuery(topics));
+
+    // Publishers
+    ros::Publisher pub = nh.advertise<sensor_msgs::PointCloud2>("rgb_cloud", 1);
+
+    cv::Mat latest_image;
+    for (const rosbag::MessageInstance& m : view) {
+        if (m.getTopic() == "/cam_1/color/image_raw" || ("/" + m.getTopic() == "/cam_1/color/image_raw")) {
+            sensor_msgs::Image::ConstPtr image_msg = m.instantiate<sensor_msgs::Image>();
+            if (image_msg != nullptr) {
+                cv_bridge::CvImagePtr cv_ptr;
+                try {
+                    cv_ptr = cv_bridge::toCvCopy(image_msg, sensor_msgs::image_encodings::BGR8);
+                    cv::undistort(cv_ptr->image, latest_image, camera_matrix, dist_coeffs);
+                } catch (const cv_bridge::Exception& e) {
+                    ROS_ERROR("cv_bridge exception: %s", e.what());
+                    continue;
+                }
+            }
+        } else if (m.getTopic() == "/livox/lidar" || ("/" + m.getTopic() == "/livox/lidar")) {
+            colorizeAndPublishPointCloudFrame(m, latest_image, pub);
+        }
+
+        // Adjust the rate according to your needs
+        ros::Rate loop_rate(10); // 10 Hz, or 10 frames per second
+        loop_rate.sleep();
+    }
+
+    bag.close();
+}
+
+
 int main(int argc, char** argv) {
     ros::init(argc, argv, "bag_to_rgb");
     ros::NodeHandle nh;
-     // Initialize extrinsic matrix
+
+    // Initialize extrinsic matrix
     initializeExtrinsicMatrix();
 
-
+    // Publish to the "rgb_cloud" topic
     pub = nh.advertise<sensor_msgs::PointCloud2>("rgb_cloud", 1);
     
     // Subscribe to the camera pose topic
@@ -244,19 +256,16 @@ int main(int argc, char** argv) {
     }
 
     // Allow the publisher some time to register with the ROS master
-    ros::Rate rate(1); // Define rate here and use it throughout the function
-
+    ros::Rate rate(1); // This rate is just used here for a pause, not for the main loop
     rate.sleep(); // Sleep for a moment to give time for publisher registration
 
-    colorizePointCloudFromBag(argv[1], nh);
-
-    // Keep the node alive to listen to callbacks and to keep publishing if necessary
-    while (ros::ok()) {
-        ros::spinOnce(); // Handle ROS callbacks and check for new messages
-        rate.sleep(); // Sleep to maintain the loop rate
-    }
+    // Call the new function to process and publish the point clouds frame by frame
+    colorizePointCloudFromBagFrameByFrame(argv[1], nh);
 
     ROS_INFO("Finished processing and publishing.");
+
+    // No need for a while loop here since colorizePointCloudFromBagFrameByFrame contains its own publishing loop
+    // However, if your program has other ongoing tasks or subscriptions, you might still need a loop here.
 
     return 0;
 }
