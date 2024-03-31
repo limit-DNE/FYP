@@ -75,54 +75,6 @@ void convertCustomMsgToPCLPointCloud(const livox_ros_driver2::CustomMsg& custom_
 }
 
 
-/*void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const cv::Mat& image, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
-    colorized_cloud->clear();
-
-    // Convert ROS pose to OpenCV Affine transformation
-    cv::Affine3d camera_pose(
-        cv::Affine3d::Mat3(
-            latest_camera_pose.pose.orientation.w,
-            -latest_camera_pose.pose.orientation.z,
-            latest_camera_pose.pose.orientation.y,
-            latest_camera_pose.pose.orientation.z,
-            latest_camera_pose.pose.orientation.w,
-            -latest_camera_pose.pose.orientation.x,
-            -latest_camera_pose.pose.orientation.y,
-            latest_camera_pose.pose.orientation.x,
-            latest_camera_pose.pose.orientation.w
-        ),
-        cv::Affine3d::Vec3(
-            latest_camera_pose.pose.position.x,
-            latest_camera_pose.pose.position.y,
-            latest_camera_pose.pose.position.z
-        )
-    );
-
-    for (const auto& point : cloud->points) {
-        if (point.z <= 0) continue;  // Skip points behind the camera
-
-        // Transform the point from point cloud frame to camera frame
-        cv::Vec3d transformed_point = camera_pose * cv::Vec3d(point.x, point.y, point.z);
-
-        std::vector<cv::Point3f> object_points{ {static_cast<float>(transformed_point[0]), static_cast<float>(transformed_point[1]), static_cast<float>(transformed_point[2])} };
-        std::vector<cv::Point2f> image_points;
-        cv::projectPoints(object_points, cv::Vec3f(0, 0, 0), cv::Vec3f(0, 0, 0), camera_matrix, dist_coeffs, image_points);
-
-        auto& ip = image_points[0];
-        if (ip.x >= 0 && ip.x < image.cols && ip.y >= 0 && ip.y < image.rows) {
-            cv::Vec3b color = image.at<cv::Vec3b>(cv::Point(ip.x, ip.y));
-            pcl::PointXYZRGB colorized_point;
-            colorized_point.x = point.x;
-            colorized_point.y = point.y;
-            colorized_point.z = point.z;
-            colorized_point.r = color[2];
-            colorized_point.g = color[1];
-            colorized_point.b = color[0];
-            colorized_cloud->points.push_back(colorized_point);
-        }
-    }
-    ROS_INFO("Processed %lu points. Colorized %d points.", cloud->points.size(), colorized_cloud->points.size());
-} */
 
 void colorizePointCloud(const pcl::PointCloud<pcl::PointXYZ>::Ptr& cloud, const cv::Mat& image, pcl::PointCloud<pcl::PointXYZRGB>::Ptr& colorized_cloud) {
     colorized_cloud->clear();
